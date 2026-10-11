@@ -1,0 +1,20 @@
+# Azure DevOps variable template for the UAT environment.
+# Included per stage by azure-pipelines-backend.yml and azure-pipelines-frontend.yml.
+# Do NOT put secrets here - use Azure DevOps variable groups / Key Vault / AWS Secrets Manager.
+variables:
+  envName: uat
+
+  # Logging - injected into Lambda (backend) and config.js (frontend) at deploy time
+  logLevel: INFO            # DEBUG | INFO | WARNING | ERROR
+  logFormat: json          # json | text
+  frontendLogLevel: info    # debug | info | warn | error
+
+  # CloudFormation stacks
+  backendStackName: myapp-backend-uat
+  frontendStackName: myapp-frontend-uat
+
+  # Pre-created S3 bucket that SAM uploads Lambda packages to
+  samArtifactBucket: myapp-sam-artifacts-uat-<ACCOUNT_ID>
+
+  # Comma-separated origins allowed by the API (CORS). Must match the frontend URL.
+  allowedOrigins: http://myapp-uat-web-<ACCOUNT_ID>.s3-website.ap-south-1.amazonaws.com

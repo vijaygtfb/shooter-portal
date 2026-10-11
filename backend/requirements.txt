@@ -1,0 +1,7 @@
+# Runtime dependencies (packaged into Lambda). boto3 is provided by the Lambda runtime
+# but pinned here so local + Lambda behave the same.
+fastapi>=0.115,<1.0
+mangum>=0.19,<1.0
+pydantic>=2.8,<3.0
+pydantic-settings>=2.4,<3.0
+boto3>=1.35,<2.0

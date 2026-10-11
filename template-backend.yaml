@@ -1,0 +1,120 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: MyApp backend - FastAPI (Mangum) on Lambda + API Gateway HTTP API + DynamoDB
+
+Parameters:
+  AppName:
+    Type: String
+    Default: myapp
+  EnvName:
+    Type: String
+    AllowedValues: [test, uat, prod]
+  LogLevel:
+    Type: String
+    Default: INFO
+    AllowedValues: [DEBUG, INFO, WARNING, ERROR]
+  LogFormat:
+    Type: String
+    Default: json
+    AllowedValues: [json, text]
+  AllowedOrigins:
+    Type: String
+    Description: Comma-separated list of origins allowed by CORS
+
+Conditions:
+  IsProd: !Equals [!Ref EnvName, prod]
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Architectures: [x86_64]
+    MemorySize: 512
+    Timeout: 29            # API Gateway integration limit
+    Tracing: Active
+    Environment:
+      Variables:
+        APP_ENV: !Ref EnvName
+        LOG_LEVEL: !Ref LogLevel
+        LOG_FORMAT: !Ref LogFormat
+        CORS_ORIGINS: !Ref AllowedOrigins
+
+Resources:
+  # ---------------- DynamoDB ----------------
+  ItemsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub ${AppName}-${EnvName}-items
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: id, AttributeType: S }
+        - { AttributeName: category, AttributeType: S }
+        - { AttributeName: created_at, AttributeType: S }
+      KeySchema:
+        - { AttributeName: id, KeyType: HASH }
+      GlobalSecondaryIndexes:
+        - IndexName: category-index
+          KeySchema:
+            - { AttributeName: category, KeyType: HASH }
+            - { AttributeName: created_at, KeyType: RANGE }
+          Projection: { ProjectionType: ALL }
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [IsProd, true, false]
+      DeletionProtectionEnabled: !If [IsProd, true, false]
+      SSESpecification:
+        SSEEnabled: true
+
+  # ---------------- API ----------------
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 100
+        ThrottlingRateLimit: 50
+      AccessLogSettings:
+        DestinationArn: !GetAtt ApiAccessLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","routeKey":"$context.routeKey","status":"$context.status","latencyMs":"$context.responseLatency"}'
+
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    DependsOn: ApiFunctionLogGroup
+    Properties:
+      FunctionName: !Sub ${AppName}-${EnvName}-api
+      CodeUri: backend/
+      Handler: app.main.handler
+      Environment:
+        Variables:
+          ITEMS_TABLE_NAME: !Ref ItemsTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ItemsTable
+      Events:
+        ProxyRoute:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /{proxy+}
+            Method: ANY
+
+  # ---------------- Logs ----------------
+  ApiFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AppName}-${EnvName}-api
+      RetentionInDays: !If [IsProd, 90, 14]
+
+  ApiAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/apigateway/${AppName}-${EnvName}-api
+      RetentionInDays: !If [IsProd, 90, 14]
+
+Outputs:
+  ApiUrl:
+    Description: Base URL of the HTTP API
+    Value: !Sub https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com
+  ItemsTableName:
+    Value: !Ref ItemsTable
+  ApiFunctionName:
+    Value: !Ref ApiFunction

@@ -1,0 +1,137 @@
+# Backend CI/CD - single multi-stage pipeline (CI + CD, no separate release pipeline)
+# CI -> Deploy test -> Deploy uat -> Deploy prod
+# Approvals/checks are configured on the Azure DevOps Environments: myapp-uat, myapp-prod.
+
+name: backend-$(Date:yyyyMMdd)$(Rev:.r)
+
+trigger:
+  branches:
+    include: [main]
+  paths:
+    include:
+      - backend/**
+      - template-backend.yaml
+      - env-*.yaml
+      - azure-pipelines-backend.yml
+
+pr:
+  branches:
+    include: [main]
+  paths:
+    include:
+      - backend/**
+      - template-backend.yaml
+      - azure-pipelines-backend.yml
+
+parameters:
+  - name: environments
+    type: object
+    default: [test, uat, prod]
+
+variables:
+  pythonVersion: "3.12"
+  awsRegion: ap-south-1
+
+pool:
+  vmImage: ubuntu-latest
+
+stages:
+  # ============================ CI ============================
+  - stage: CI
+    displayName: Build & test
+    jobs:
+      - job: build
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: $(pythonVersion)
+
+          - script: |
+              python -m pip install --upgrade pip
+              pip install -r requirements-dev.txt
+            workingDirectory: backend
+            displayName: Install dependencies
+
+          - script: |
+              ruff check .
+              ruff format --check .
+            workingDirectory: backend
+            displayName: Lint
+
+          - script: pytest --junitxml=test-results.xml --cov=app --cov-report=xml
+            workingDirectory: backend
+            displayName: Unit tests
+
+          - task: PublishTestResults@2
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFiles: backend/test-results.xml
+
+          - script: |
+              pip install aws-sam-cli
+              sam validate --lint -t template-backend.yaml
+              sam build -t template-backend.yaml
+            displayName: Validate & build SAM template
+
+          - publish: .aws-sam/build
+            artifact: sam-build
+            displayName: Publish build artifact
+
+  # ============================ CD ============================
+  - ${{ each env in parameters.environments }}:
+      - stage: Deploy_${{ env }}
+        displayName: Deploy ${{ env }}
+        condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+        variables:
+          - template: env-${{ env }}.yaml
+        jobs:
+          - deployment: deploy
+            environment: myapp-${{ env }}
+            strategy:
+              runOnce:
+                deploy:
+                  steps:
+                    - download: current
+                      artifact: sam-build
+
+                    - task: UsePythonVersion@0
+                      inputs:
+                        versionSpec: $(pythonVersion)
+
+                    - script: pip install aws-sam-cli
+                      displayName: Install SAM CLI
+
+                    - task: AWSShellScript@1
+                      displayName: sam deploy
+                      inputs:
+                        awsCredentials: aws-${{ env }}      # AWS service connection per environment
+                        regionName: $(awsRegion)
+                        scriptType: inline
+                        inlineScript: |
+                          set -euo pipefail
+                          sam deploy \
+                            --template-file $(Pipeline.Workspace)/sam-build/template.yaml \
+                            --stack-name $(backendStackName) \
+                            --s3-bucket $(samArtifactBucket) \
+                            --s3-prefix $(backendStackName) \
+                            --capabilities CAPABILITY_IAM \
+                            --no-confirm-changeset \
+                            --no-fail-on-empty-changeset \
+                            --tags App=myapp Env=$(envName) \
+                            --parameter-overrides \
+                              EnvName=$(envName) \
+                              LogLevel=$(logLevel) \
+                              LogFormat=$(logFormat) \
+                              AllowedOrigins="$(allowedOrigins)"
+
+                    - task: AWSShellScript@1
+                      displayName: Smoke test /health
+                      inputs:
+                        awsCredentials: aws-${{ env }}
+                        regionName: $(awsRegion)
+                        scriptType: inline
+                        inlineScript: |
+                          set -euo pipefail
+                          API_URL=$(aws cloudformation describe-stacks --stack-name $(backendStackName) \
+                            --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue" --output text)
+                          curl --fail --silent --show-error "$API_URL/health"

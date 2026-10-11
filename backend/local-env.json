@@ -1,0 +1,10 @@
+{
+  "ApiFunction": {
+    "APP_ENV": "local",
+    "LOG_LEVEL": "DEBUG",
+    "LOG_FORMAT": "text",
+    "ITEMS_TABLE_NAME": "myapp-local-items",
+    "DYNAMODB_ENDPOINT_URL": "http://host.docker.internal:8001",
+    "CORS_ORIGINS": "http://localhost:5173"
+  }
+}

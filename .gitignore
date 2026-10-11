@@ -1,0 +1,37 @@
+# --- OS / IDE ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# --- Secrets / local env (env-*.yaml pipeline files ARE committed) ---
+.env
+.env.*
+!.env.example
+*.pem
+
+# --- Python / backend ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+test-results.xml
+
+# --- AWS SAM ---
+.aws-sam/
+samconfig.toml
+
+# --- Node / frontend ---
+node_modules/
+frontend/dist/
+frontend/coverage/
+*.log
+npm-debug.log*
+*.tsbuildinfo

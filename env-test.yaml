@@ -1,0 +1,20 @@
+# Azure DevOps variable template for the TEST environment.
+# Included per stage by azure-pipelines-backend.yml and azure-pipelines-frontend.yml.
+# Do NOT put secrets here - use Azure DevOps variable groups / Key Vault / AWS Secrets Manager.
+variables:
+  envName: test
+
+  # Logging - injected into Lambda (backend) and config.js (frontend) at deploy time
+  logLevel: DEBUG            # DEBUG | INFO | WARNING | ERROR
+  logFormat: json          # json | text
+  frontendLogLevel: debug    # debug | info | warn | error
+
+  # CloudFormation stacks
+  backendStackName: myapp-backend-test
+  frontendStackName: myapp-frontend-test
+
+  # Pre-created S3 bucket that SAM uploads Lambda packages to
+  samArtifactBucket: myapp-sam-artifacts-test-<ACCOUNT_ID>
+
+  # Comma-separated origins allowed by the API (CORS). Must match the frontend URL.
+  allowedOrigins: http://myapp-test-web-<ACCOUNT_ID>.s3-website.ap-south-1.amazonaws.com

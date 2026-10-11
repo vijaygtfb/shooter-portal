@@ -1,0 +1,128 @@
+# Frontend CI/CD - single multi-stage pipeline (CI + CD, no separate release pipeline)
+# Build ONCE, deploy the same artifact to test -> uat -> prod.
+# Per-environment settings go into config.js at deploy time (no rebuild per env).
+
+name: frontend-$(Date:yyyyMMdd)$(Rev:.r)
+
+trigger:
+  branches:
+    include: [main]
+  paths:
+    include:
+      - frontend/**
+      - template-frontend.yaml
+      - env-*.yaml
+      - azure-pipelines-frontend.yml
+
+pr:
+  branches:
+    include: [main]
+  paths:
+    include:
+      - frontend/**
+      - template-frontend.yaml
+      - azure-pipelines-frontend.yml
+
+parameters:
+  - name: environments
+    type: object
+    default: [test, uat, prod]
+
+variables:
+  nodeVersion: "20.x"
+  awsRegion: ap-south-1
+
+pool:
+  vmImage: ubuntu-latest
+
+stages:
+  # ============================ CI ============================
+  - stage: CI
+    displayName: Build & test
+    jobs:
+      - job: build
+        steps:
+          - task: NodeTool@0
+            inputs:
+              versionSpec: $(nodeVersion)
+
+          - script: npm ci
+            workingDirectory: frontend
+            displayName: Install dependencies
+
+          - script: |
+              npm run lint
+              npm run typecheck
+            workingDirectory: frontend
+            displayName: Lint & typecheck
+
+          - script: npm run test
+            workingDirectory: frontend
+            displayName: Unit tests
+
+          - script: npm run build
+            workingDirectory: frontend
+            displayName: Production build
+
+          - publish: frontend/dist
+            artifact: web
+            displayName: Publish build artifact
+
+  # ============================ CD ============================
+  - ${{ each env in parameters.environments }}:
+      - stage: Deploy_${{ env }}
+        displayName: Deploy ${{ env }}
+        condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+        variables:
+          - template: env-${{ env }}.yaml
+        jobs:
+          - deployment: deploy
+            environment: myapp-${{ env }}
+            strategy:
+              runOnce:
+                deploy:
+                  steps:
+                    - checkout: self          # needed for template-frontend.yaml
+                    - download: current
+                      artifact: web
+
+                    - task: AWSShellScript@1
+                      displayName: Deploy bucket stack + upload site
+                      inputs:
+                        awsCredentials: aws-${{ env }}
+                        regionName: $(awsRegion)
+                        scriptType: inline
+                        inlineScript: |
+                          set -euo pipefail
+
+                          aws cloudformation deploy \
+                            --template-file template-frontend.yaml \
+                            --stack-name $(frontendStackName) \
+                            --parameter-overrides EnvName=$(envName) \
+                            --tags App=myapp Env=$(envName) \
+                            --no-fail-on-empty-changeset
+
+                          out() { aws cloudformation describe-stacks --stack-name "$1" \
+                            --query "Stacks[0].Outputs[?OutputKey=='$2'].OutputValue" --output text; }
+
+                          BUCKET=$(out $(frontendStackName) WebsiteBucketName)
+                          API_URL=$(out $(backendStackName) ApiUrl)
+                          WEB=$(Pipeline.Workspace)/web
+
+                          # Runtime config for this environment (read by src/config.ts)
+                          cat > "$WEB/config.js" <<CFG
+                          window.__APP_CONFIG__ = {
+                            envName: "$(envName)",
+                            apiBaseUrl: "$API_URL",
+                            logLevel: "$(frontendLogLevel)"
+                          };
+                          CFG
+
+                          # Hashed assets: cache forever. index.html + config.js: never cache.
+                          aws s3 sync "$WEB" "s3://$BUCKET" --delete \
+                            --exclude index.html --exclude config.js \
+                            --cache-control "public,max-age=31536000,immutable"
+                          aws s3 cp "$WEB/index.html" "s3://$BUCKET/index.html" --cache-control "no-cache"
+                          aws s3 cp "$WEB/config.js"  "s3://$BUCKET/config.js"  --cache-control "no-cache"
+
+                          echo "Deployed: $(out $(frontendStackName) WebsiteUrl)"
